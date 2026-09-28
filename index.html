@@ -1,0 +1,227 @@
+-- Place this single Script inside ServerScriptService
+
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local Workspace = game:GetService("Workspace")
+
+local GardenData = DataStoreService:GetDataStore("GardenGame_v1")
+
+-- Configurations
+local GROW_TIME = 8        -- Seconds to grow a crop
+local SEED_PRICE = 15       -- Cost of 1x Seed
+local CROP_SELL_PRICE = 35  -- Earnings per harvested crop
+
+--------------------------------------------------------------------------------
+-- 1. DATA SAVING & LEADERSTATS SYSTEM
+--------------------------------------------------------------------------------
+local function setupLeaderstats(player)
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Value = 100
+	coins.Parent = leaderstats
+
+	local inventory = Instance.new("Folder")
+	inventory.Name = "Inventory"
+	inventory.Parent = player
+
+	local seeds = Instance.new("IntValue")
+	seeds.Name = "CarrotSeeds"
+	seeds.Value = 3
+	seeds.Parent = inventory
+
+	local crops = Instance.new("IntValue")
+	crops.Name = "Carrots"
+	crops.Value = 0
+	crops.Parent = inventory
+
+	-- Load Saved Data
+	local dataKey = "Player_" .. player.UserId
+	local success, savedData = pcall(function()
+		return GardenData:GetAsync(dataKey)
+	end)
+
+	if success and savedData then
+		coins.Value = savedData.Coins or 100
+		seeds.Value = savedData.Seeds or 3
+		crops.Value = savedData.Crops or 0
+	end
+end
+
+local function saveData(player)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local inventory = player:FindFirstChild("Inventory")
+	if not leaderstats or not inventory then return end
+
+	local dataKey = "Player_" .. player.UserId
+	local dataToSave = {
+		Coins = leaderstats.Coins.Value,
+		Seeds = inventory.CarrotSeeds.Value,
+		Crops = inventory.Carrots.Value
+	}
+
+	pcall(function()
+		GardenData:SetAsync(dataKey, dataToSave)
+	end)
+end
+
+Players.PlayerAdded:Connect(setupLeaderstats)
+Players.PlayerRemoving:Connect(saveData)
+
+--------------------------------------------------------------------------------
+-- 2. CROP & PLOT MECHANICS
+--------------------------------------------------------------------------------
+local function createCropModel()
+	local plant = Instance.new("Part")
+	plant.Name = "CropPlant"
+	plant.Shape = Enum.PartType.Cylinder
+	plant.Size = Vector3.new(0.5, 1, 0.5)
+	plant.Color = Color3.fromRGB(255, 140, 0) -- Carrot Orange
+	plant.Anchored = true
+	plant.CanCollide = false
+	return plant
+end
+
+local function setupPlot(plot)
+	local state = "Empty" -- "Empty", "Growing", "Ready"
+	local currentCrop = nil
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ObjectText = "Garden Plot"
+	prompt.ActionText = "Plant Carrot Seed"
+	prompt.HoldDuration = 0.2
+	prompt.MaxActivationDistance = 10
+	prompt.Parent = plot
+
+	prompt.Triggered:Connect(function(player)
+		local inventory = player:FindFirstChild("Inventory")
+		if not inventory then return end
+
+		local seeds = inventory:FindFirstChild("CarrotSeeds")
+		local crops = inventory:FindFirstChild("Carrots")
+
+		-- PLANTING STAGE
+		if state == "Empty" then
+			if seeds and seeds.Value > 0 then
+				seeds.Value -= 1
+				state = "Growing"
+				prompt.Enabled = false
+
+				-- Spawn seedling
+				currentCrop = createCropModel()
+				currentCrop.Size = Vector3.new(0.2, 0.4, 0.2)
+				currentCrop.CFrame = plot.CFrame * CFrame.new(0, 0.8, 0) * CFrame.Angles(0, 0, math.rad(90))
+				currentCrop.Parent = plot
+
+				-- Growth animation
+				task.wait(GROW_TIME / 2)
+				if currentCrop and currentCrop.Parent then
+					currentCrop.Size = Vector3.new(0.4, 0.8, 0.4)
+				end
+				
+				task.wait(GROW_TIME / 2)
+				if currentCrop and currentCrop.Parent then
+					currentCrop.Size = Vector3.new(0.8, 1.5, 0.8)
+				end
+
+				state = "Ready"
+				prompt.ActionText = "Harvest Carrot"
+				prompt.Enabled = true
+			end
+
+		-- HARVESTING STAGE
+		elseif state == "Ready" then
+			state = "Empty"
+			if crops then
+				crops.Value += 1
+			end
+
+			if currentCrop then
+				currentCrop:Destroy()
+				currentCrop = nil
+			end
+
+			prompt.ActionText = "Plant Carrot Seed"
+		end
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- 3. ECONOMY (BUY SEEDS / SELL CROPS)
+--------------------------------------------------------------------------------
+local function setupShop(shopPart)
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ObjectText = "Seed Merchant"
+	prompt.ActionText = "Buy 1x Seed ($" .. SEED_PRICE .. ")"
+	prompt.HoldDuration = 0.3
+	prompt.Parent = shopPart
+
+	prompt.Triggered:Connect(function(player)
+		local leaderstats = player:FindFirstChild("leaderstats")
+		local inventory = player:FindFirstChild("Inventory")
+
+		if leaderstats and inventory then
+			local coins = leaderstats:FindFirstChild("Coins")
+			local seeds = inventory:FindFirstChild("CarrotSeeds")
+
+			if coins and seeds and coins.Value >= SEED_PRICE then
+				coins.Value -= SEED_PRICE
+				seeds.Value += 1
+			end
+		end
+	end)
+end
+
+local function setupSellStation(sellPart)
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ObjectText = "Market Stand"
+	prompt.ActionText = "Sell All Crops"
+	prompt.HoldDuration = 0.5
+	prompt.Parent = sellPart
+
+	prompt.Triggered:Connect(function(player)
+		local leaderstats = player:FindFirstChild("leaderstats")
+		local inventory = player:FindFirstChild("Inventory")
+
+		if leaderstats and inventory then
+			local coins = leaderstats:FindFirstChild("Coins")
+			local crops = inventory:FindFirstChild("Carrots")
+
+			if coins and crops and crops.Value > 0 then
+				local totalEarnings = crops.Value * CROP_SELL_PRICE
+				coins.Value += totalEarnings
+				crops.Value = 0
+			end
+		end
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- 4. WORLD INITIALIZATION
+--------------------------------------------------------------------------------
+task.spawn(function()
+	-- Connect Plots
+	local plotsFolder = Workspace:WaitForChild("Plots", 10)
+	if plotsFolder then
+		for _, plot in ipairs(plotsFolder:GetChildren()) do
+			if plot:IsA("BasePart") then
+				setupPlot(plot)
+			end
+		end
+	end
+
+	-- Connect Shop
+	local shop = Workspace:WaitForChild("ShopNPC", 10)
+	if shop and shop:IsA("BasePart") then
+		setupShop(shop)
+	end
+
+	-- Connect Sell Box
+	local sellBox = Workspace:WaitForChild("SellBox", 10)
+	if sellBox and sellBox:IsA("BasePart") then
+		setupSellStation(sellBox)
+	end
+end)
